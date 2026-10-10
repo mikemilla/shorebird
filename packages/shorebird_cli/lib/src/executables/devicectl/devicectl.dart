@@ -166,6 +166,57 @@ class Devicectl {
     }
   }
 
+  /// Launches [bundleId] on [deviceId], killing it first if it is running.
+  Future<void> relaunchApp({
+    required String deviceId,
+    required String bundleId,
+  }) async {
+    try {
+      await _runJsonCommand(
+        args: [
+          ...baseArgs,
+          'device',
+          'process',
+          'launch',
+          '--terminate-existing',
+          '--device',
+          deviceId,
+          bundleId,
+        ],
+      );
+    } catch (error) {
+      throw DevicectlException(
+        message: 'App launch failed',
+        underlyingException: error,
+      );
+    }
+  }
+
+  /// Whether [bundleId] is installed on [deviceId].
+  Future<bool> isAppInstalled({
+    required String deviceId,
+    required String bundleId,
+  }) async {
+    try {
+      final json = await _runJsonCommand(
+        args: [
+          ...baseArgs,
+          'device',
+          'info',
+          'apps',
+          '--device',
+          deviceId,
+          '--bundle-id',
+          bundleId,
+        ],
+      );
+      final apps = JsonPath(r'$.result.apps').read(json).firstOrNull?.value;
+      return apps is List && apps.isNotEmpty;
+    } on Exception {
+      return false;
+    }
+  }
+
   /// The first Xcode major version for which app logs are read from
   /// `devicectl device process launch --console` instead of idevicesyslog.
   ///

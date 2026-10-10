@@ -33,7 +33,7 @@ class PushCommand extends ShorebirdCommand with PatchNumberArgument {
       )
       ..addOption(
         'platform',
-        allowed: [ReleasePlatform.android.name],
+        allowed: [ReleasePlatform.android.name, ReleasePlatform.ios.name],
         defaultsTo: ReleasePlatform.android.name,
         help: 'The platform of the patch.',
       )
@@ -84,6 +84,10 @@ class PushCommand extends ShorebirdCommand with PatchNumberArgument {
         results[CommonArguments.releaseVersionArg.name] as String;
     final store = LocalStore(shorebirdEnv.localDataDirectory);
 
+    final platform = ReleasePlatform.values.byName(
+      results['platform'] as String,
+    );
+
     final int patchNumber;
     if (results['patch-number'] != null) {
       final (patchNumber: parsed, errorCode: patchNumberError) =
@@ -102,12 +106,22 @@ class PushCommand extends ShorebirdCommand with PatchNumberArgument {
                   'patches',
                   (p) =>
                       p['release_id'] == release['id'] &&
-                      p['is_rolled_back'] != true,
+                      p['is_rolled_back'] != true &&
+                      store.find(
+                            'patch_artifacts',
+                            (a) =>
+                                a['patch_id'] == p['id'] &&
+                                a['platform'] == platform.name,
+                          ) !=
+                          null,
                 )
                 .map((p) => p['number'] as int)
                 .toList();
       if (numbers.isEmpty) {
-        logger.err('Release $releaseVersion has no patches to push.');
+        logger.err(
+          'Release $releaseVersion has no ${platform.displayName} patches '
+          'to push.',
+        );
         return ExitCode.usage.code;
       }
       patchNumber = numbers.reduce((a, b) => a > b ? a : b);
@@ -117,7 +131,7 @@ class PushCommand extends ShorebirdCommand with PatchNumberArgument {
       appId: appId,
       releaseVersion: releaseVersion,
       patchNumber: patchNumber,
-      platform: ReleasePlatform.values.byName(results['platform'] as String),
+      platform: platform,
       deviceIds: deviceIds,
       allDevices: allDevices,
     );

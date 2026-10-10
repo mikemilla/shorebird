@@ -14,6 +14,7 @@ import 'package:shorebird_cli/src/config/config.dart';
 import 'package:shorebird_cli/src/extensions/arg_results.dart';
 import 'package:shorebird_cli/src/extensions/string.dart';
 import 'package:shorebird_cli/src/json_output.dart';
+import 'package:shorebird_cli/src/local/local_base_url.dart';
 import 'package:shorebird_cli/src/logging/logging.dart';
 import 'package:shorebird_cli/src/metadata/metadata.dart';
 import 'package:shorebird_cli/src/platform.dart';
@@ -205,7 +206,10 @@ of the iOS app that is using this module. (aar and ios-framework only)''',
     // the one whose platform statuses are complete.
     final releases = <int, Release>{};
     for (final releaseType in results.releaseTypes) {
-      final release = await createRelease(_resolveReleaser(releaseType));
+      final release = await withLocalBaseUrlFor(
+        releaseType.releasePlatform,
+        () => createRelease(_resolveReleaser(releaseType)),
+      );
       releases[release.id] = release;
     }
 

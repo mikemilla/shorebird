@@ -7,7 +7,7 @@ in a folder on disk, and the CLI pushes patches straight to devices you choose.
 Local mode is the default. To use a hosted server instead, set
 `SHOREBIRD_HOSTED_URL` (for example `https://api.shorebird.dev`).
 
-## Quick start (Android)
+## Quick start
 
 ```sh
 export PATH="/path/to/this/fork/bin:$PATH"
@@ -20,14 +20,22 @@ shorebird preview -d emulator-5554   # installs the release on a device
 shorebird patch android -d emulator-5554     # push to one device
 shorebird patch android --all-devices        # push to every connected device
 
+# iOS: same commands; -d takes the UDID (from `xcrun devicectl list devices`)
+# or the device name
+shorebird release ios --export-method development
+shorebird preview --platform ios -d 00008110-00042C5E1412801E
+shorebird patch ios -d "Mike's fancy iPhone"
+shorebird patch ios --all-devices
+
 # re-push an existing patch without rebuilding (defaults to the latest):
 shorebird patches push --release-version 1.0.0+1 -d R5CT1234ABC
 shorebird patches push --release-version 1.0.0+1 --all-devices
 ```
 
-`-d` takes any serial from `adb devices` (emulator, USB, or wireless debugging)
-and can be repeated. `--all-devices` targets every connected device that has
-the app installed and skips the rest.
+On Android, `-d` takes any serial from `adb devices` (emulator, USB, or
+wireless debugging). On iOS it takes a paired device's UDID or name. It can be
+repeated. `--all-devices` targets every reachable device of the patch's
+platform that has the app installed, and skips the rest.
 
 ## How a push works
 
@@ -50,6 +58,25 @@ update checks fail quietly and they keep running whatever they had.
 This works because `shorebird init` (or the first `shorebird release`) writes
 `base_url: http://127.0.0.1:47474` into `shorebird.yaml`, and that file is
 built into the app.
+
+### iOS
+
+A phone can't reach the Mac's `127.0.0.1`, and iOS has no `adb reverse`, so
+iPhones connect over Wi-Fi instead:
+
+- For iOS builds only, `shorebird release ios` and `shorebird patch ios` swap
+  `base_url` to the Mac's Bonjour name (`http://<LocalHostName>.local:47474`).
+  The swap lasts only for the build, and `shorebird.yaml` is restored after.
+  Set `SHOREBIRD_LOCAL_IOS_HOST` to use a different host.
+- During a push, the listener binds only to the addresses of the Mac's active
+  network interface. It runs for the few seconds of the push and only serves
+  the patch being pushed.
+- The app is relaunched with `xcrun devicectl device process launch
+  --terminate-existing`, so the phone must be paired, unlocked and on the
+  same Wi-Fi as the Mac.
+- The first time the app connects, iOS asks for **Local Network** access.
+  Allow it. Add an `NSLocalNetworkUsageDescription` to `Info.plist` so the
+  prompt explains why.
 
 ## Where things live
 
@@ -74,13 +101,13 @@ to build patches for that release.
 | `artifact_manager.dart` | Reads `file://` artifact URLs |
 | `init_command.dart`, `release_command.dart` | Write `base_url` in local mode |
 | `executables/adb.dart` | `devices`, `isInstalled`, `forceStop`, `reverse`, `removeReverse` |
+| `executables/devicectl/devicectl.dart` | `relaunchApp`, `isAppInstalled` |
+| `local/local_base_url.dart` | Points iOS builds' `base_url` at the Mac's `.local` name |
 
 ## Limits
 
-- **Android only for now.** iOS needs a different transport, because a phone
-  can't reach the Mac's `127.0.0.1` and there's no `adb reverse` equivalent.
-  `shorebird release ios` and `shorebird patch ios` still store everything
-  locally, but pushing to iOS devices isn't wired up yet.
+- **iOS releases carry the Mac's hostname.** If you rename the Mac, releases
+  built before the rename can't reach it anymore. Cut a new release.
 - **Engine binaries are fetched from Shorebird's public CDN** the first time a
   Flutter revision is used, then cached. No account is involved, just like
   Flutter downloading its own engine.

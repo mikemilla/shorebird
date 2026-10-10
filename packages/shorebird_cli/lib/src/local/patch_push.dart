@@ -2,12 +2,16 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:archive/archive.dart';
 import 'package:collection/collection.dart';
 import 'package:mason_logger/mason_logger.dart';
+import 'package:path/path.dart' as p;
+import 'package:shorebird_cli/src/executables/devicectl/apple_device.dart';
 import 'package:shorebird_cli/src/executables/executables.dart';
 import 'package:shorebird_cli/src/local/local_store.dart';
 import 'package:shorebird_cli/src/logging/logging.dart';
 import 'package:shorebird_cli/src/shorebird_env.dart';
+import 'package:shorebird_cli/src/shorebird_process.dart';
 import 'package:shorebird_code_push_client/shorebird_code_push_client.dart';
 
 /// Something a device told the [PatchPushServer].
@@ -93,24 +97,36 @@ class PatchOffer {
   final List<int> rolledBackNumbers;
 }
 
-/// A short-lived HTTP endpoint speaking the updater's protocol, bound to
-/// loopback only. It exists for the duration of a push and answers only for
-/// the [offer] being pushed.
+/// A short-lived HTTP endpoint speaking the updater's protocol. It exists for
+/// the duration of a push and answers only for the [offer] being pushed.
 class PatchPushServer {
-  PatchPushServer._(this._server, this.offer) {
-    _server.listen(_handle);
+  PatchPushServer._(this._servers, this.offer) {
+    for (final server in _servers) {
+      server.listen(_handle);
+    }
   }
 
-  /// Starts listening on `127.0.0.1:[port]`.
+  /// Starts listening on [port] at each of [addresses] (loopback by default).
   static Future<PatchPushServer> start({
     required int port,
     required PatchOffer offer,
+    List<InternetAddress>? addresses,
   }) async {
-    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, port);
-    return PatchPushServer._(server, offer);
+    final servers = <HttpServer>[];
+    try {
+      for (final address in addresses ?? [InternetAddress.loopbackIPv4]) {
+        servers.add(await HttpServer.bind(address, port));
+      }
+    } on SocketException {
+      for (final server in servers) {
+        await server.close(force: true);
+      }
+      rethrow;
+    }
+    return PatchPushServer._(servers, offer);
   }
 
-  final HttpServer _server;
+  final List<HttpServer> _servers;
 
   /// The patch being pushed.
   final PatchOffer offer;
@@ -122,7 +138,9 @@ class PatchPushServer {
 
   /// Stops listening.
   Future<void> close() async {
-    await _server.close(force: true);
+    for (final server in _servers) {
+      await server.close(force: true);
+    }
     await _signals.close();
   }
 
@@ -234,10 +252,65 @@ class PatchPushServer {
   }
 }
 
+/// One device a patch is being pushed to.
+abstract class _PushTarget {
+  _PushTarget(this.id, this.label);
+
+  /// The id the user passed (adb serial or iOS UDID).
+  final String id;
+
+  /// How the device is shown in progress output.
+  final String label;
+
+  /// Makes the device able to reach the push server.
+  Future<void> connect() async {}
+
+  /// Kills and restarts the app so the updater checks in.
+  Future<void> relaunch();
+
+  /// Undoes [connect].
+  Future<void> disconnect() async {}
+}
+
+class _AndroidTarget extends _PushTarget {
+  _AndroidTarget(String serial, this.package, this.port)
+    : super(serial, serial);
+
+  final String package;
+  final int port;
+
+  @override
+  Future<void> connect() => adb.reverse(deviceId: id, port: port);
+
+  @override
+  Future<void> relaunch() async {
+    await adb.forceStop(package: package, deviceId: id);
+    await adb.startApp(package: package, deviceId: id);
+  }
+
+  @override
+  Future<void> disconnect() => adb.removeReverse(deviceId: id, port: port);
+}
+
+class _IosTarget extends _PushTarget {
+  _IosTarget(super.id, super.label, this.bundleId);
+
+  final String bundleId;
+
+  @override
+  Future<void> relaunch() =>
+      devicectl.relaunchApp(deviceId: id, bundleId: bundleId);
+}
+
 /// Pushes a locally stored patch straight to devices: no hosted server, no
-/// account. For each device it opens a loopback-only endpoint, tunnels the
-/// device to it, relaunches the app so the updater pulls the patch, then
-/// relaunches again and waits until the app reports it booted the patch.
+/// account. It opens a short-lived endpoint, relaunches the app on each target
+/// so the updater pulls the patch, then relaunches again and waits until the
+/// app reports it booted the patch.
+///
+/// Android devices reach the endpoint through `adb reverse` on loopback, so
+/// nothing is exposed on the network. iPhones reach it over Wi-Fi at the
+/// `base_url` baked into iOS builds, so for iOS the endpoint binds this
+/// machine's Wi-Fi addresses (only, and only while the push runs).
 class LocalPatchPusher {
   /// Creates a pusher reading from [store].
   LocalPatchPusher(this.store);
@@ -258,9 +331,10 @@ class LocalPatchPusher {
     required List<String> deviceIds,
     required bool allDevices,
   }) async {
-    if (platform != ReleasePlatform.android) {
+    if (platform != ReleasePlatform.android &&
+        platform != ReleasePlatform.ios) {
       logger.err(
-        'Pushing to devices is supported for Android only so far '
+        'Pushing to devices supports Android and iOS '
         '(got ${platform.displayName}).',
       );
       return ExitCode.unavailable.code;
@@ -290,19 +364,6 @@ class LocalPatchPusher {
       return ExitCode.usage.code;
     }
 
-    final aab = store.find(
-      'release_artifacts',
-      (a) =>
-          a['release_id'] == release['id'] &&
-          a['platform'] == platform.name &&
-          a['arch'] == 'aab',
-    );
-    if (aab == null) {
-      logger.err('Release $releaseVersion has no Android app bundle.');
-      return ExitCode.software.code;
-    }
-    final package = await bundletool.getPackageName(aab['path'] as String);
-
     final offer = PatchOffer(
       appId: appId,
       releaseVersion: releaseVersion,
@@ -328,48 +389,48 @@ class LocalPatchPusher {
           .toList(),
     );
 
-    final connected = await adb.devices();
-    final List<String> targets;
-    if (allDevices) {
-      targets = [
-        for (final id in connected)
-          if (await adb.isInstalled(package: package, deviceId: id)) id,
-      ];
-      final skipped = connected.where((id) => !targets.contains(id));
-      for (final id in skipped) {
-        logger.info('Skipping $id: $package is not installed.');
-      }
-      if (targets.isEmpty) {
-        logger.err('No connected device has $package installed.');
-        _hintInstall(releaseVersion);
-        return ExitCode.unavailable.code;
-      }
-    } else {
-      for (final id in deviceIds) {
-        if (!connected.contains(id)) {
-          logger.err(
-            'Device $id is not connected. Connected: '
-            '${connected.isEmpty ? 'none' : connected.join(', ')}',
-          );
-          return ExitCode.unavailable.code;
-        }
-        if (!await adb.isInstalled(package: package, deviceId: id)) {
-          logger.err('$package is not installed on $id.');
-          _hintInstall(releaseVersion, deviceId: id);
-          return ExitCode.unavailable.code;
-        }
-      }
-      targets = deviceIds;
-    }
-
     final port = shorebirdEnv.localPushPort;
+    final List<_PushTarget>? targets;
+    final List<InternetAddress> addresses;
+    try {
+      if (platform == ReleasePlatform.android) {
+        targets = await _androidTargets(
+          release: release,
+          releaseVersion: releaseVersion,
+          deviceIds: deviceIds,
+          allDevices: allDevices,
+          port: port,
+        );
+        addresses = [InternetAddress.loopbackIPv4];
+      } else {
+        targets = await _iosTargets(
+          release: release,
+          releaseVersion: releaseVersion,
+          deviceIds: deviceIds,
+          allDevices: allDevices,
+        );
+        addresses = await _wifiAddresses();
+      }
+    } on Exception catch (error) {
+      logger.err('$error');
+      return ExitCode.software.code;
+    }
+    if (targets == null) return ExitCode.unavailable.code;
+
     final PatchPushServer server;
     try {
-      server = await PatchPushServer.start(port: port, offer: offer);
+      server = await PatchPushServer.start(
+        port: port,
+        offer: offer,
+        addresses: addresses,
+      );
     } on SocketException catch (error) {
-      logger.err('Could not listen on 127.0.0.1:$port: ${error.message}');
+      logger.err('Could not listen on port $port: ${error.message}');
       return ExitCode.unavailable.code;
     }
+    logger.detail(
+      '[push] listening on ${addresses.map((a) => a.address).join(', ')}',
+    );
 
     logger.info(
       'Pushing patch $patchNumber (release $releaseVersion) to '
@@ -377,14 +438,8 @@ class LocalPatchPusher {
     );
     final failed = <String>[];
     try {
-      for (final deviceId in targets) {
-        final ok = await _pushToAndroidDevice(
-          server: server,
-          deviceId: deviceId,
-          package: package,
-          port: port,
-        );
-        if (!ok) failed.add(deviceId);
+      for (final target in targets) {
+        if (!await _pushTo(server, target)) failed.add(target.label);
       }
     } finally {
       await server.close();
@@ -395,26 +450,192 @@ class LocalPatchPusher {
       return ExitCode.software.code;
     }
     logger.success(
-      '✅ Patch $patchNumber is running on ${targets.join(', ')}.',
+      '✅ Patch $patchNumber is running on '
+      '${targets.map((t) => t.label).join(', ')}.',
     );
     return ExitCode.success.code;
   }
 
-  void _hintInstall(String releaseVersion, {String? deviceId}) {
-    logger.info(
-      'Install the release first with '
-      '''${lightCyan.wrap('shorebird preview --release-version=$releaseVersion --platform=android${deviceId == null ? '' : ' -d $deviceId'}')}.''',
-    );
-  }
+  Map<String, dynamic>? _releaseArtifact(
+    Map<String, dynamic> release,
+    ReleasePlatform platform,
+    String arch,
+  ) => store.find(
+    'release_artifacts',
+    (a) =>
+        a['release_id'] == release['id'] &&
+        a['platform'] == platform.name &&
+        a['arch'] == arch,
+  );
 
-  Future<bool> _pushToAndroidDevice({
-    required PatchPushServer server,
-    required String deviceId,
-    required String package,
+  Future<List<_PushTarget>?> _androidTargets({
+    required Map<String, dynamic> release,
+    required String releaseVersion,
+    required List<String> deviceIds,
+    required bool allDevices,
     required int port,
   }) async {
+    final aab = _releaseArtifact(release, ReleasePlatform.android, 'aab');
+    if (aab == null) {
+      throw Exception('Release $releaseVersion has no Android app bundle.');
+    }
+    final package = await bundletool.getPackageName(aab['path'] as String);
+    final connected = await adb.devices();
+    final ids = allDevices ? connected : deviceIds;
+    final targets = <_PushTarget>[];
+    for (final id in ids) {
+      if (!connected.contains(id)) {
+        logger.err(
+          'Android device $id is not connected. Connected: '
+          '${connected.isEmpty ? 'none' : connected.join(', ')}',
+        );
+        return null;
+      }
+      if (!await adb.isInstalled(package: package, deviceId: id)) {
+        if (allDevices) {
+          logger.info('Skipping $id: $package is not installed.');
+          continue;
+        }
+        logger.err('$package is not installed on $id.');
+        _hintInstall(releaseVersion, ReleasePlatform.android, deviceId: id);
+        return null;
+      }
+      targets.add(_AndroidTarget(id, package, port));
+    }
+    if (targets.isEmpty) {
+      logger.err('No connected Android device has $package installed.');
+      _hintInstall(releaseVersion, ReleasePlatform.android);
+      return null;
+    }
+    return targets;
+  }
+
+  Future<List<_PushTarget>?> _iosTargets({
+    required Map<String, dynamic> release,
+    required String releaseVersion,
+    required List<String> deviceIds,
+    required bool allDevices,
+  }) async {
+    final runner = _releaseArtifact(release, ReleasePlatform.ios, 'runner');
+    if (runner == null) {
+      throw Exception(
+        'Release $releaseVersion has no signed Runner.app '
+        '(was it built with --no-codesign?).',
+      );
+    }
+    final bundleId = await _bundleIdFromRunnerZip(runner['path'] as String);
+    final devices = await devicectl.listAvailableIosDevices();
+    final List<AppleDevice> chosen;
+    if (allDevices) {
+      chosen = devices;
+    } else {
+      chosen = [];
+      for (final id in deviceIds) {
+        final device = devices.firstWhereOrNull(
+          (d) => d.udid == id || d.name.toLowerCase() == id.toLowerCase(),
+        );
+        if (device == null) {
+          logger
+            ..err(
+              'iOS device $id is not available. Available: '
+              '${devices.isEmpty ? 'none' : devices.join(', ')}',
+            )
+            ..info(
+              'Unlock the device and keep it on the same Wi-Fi as this Mac.',
+            );
+          return null;
+        }
+        chosen.add(device);
+      }
+    }
+    final targets = <_PushTarget>[];
+    for (final device in chosen) {
+      if (!await devicectl.isAppInstalled(
+        deviceId: device.udid,
+        bundleId: bundleId,
+      )) {
+        if (allDevices) {
+          logger.info('Skipping ${device.name}: $bundleId is not installed.');
+          continue;
+        }
+        logger.err('$bundleId is not installed on ${device.name}.');
+        _hintInstall(
+          releaseVersion,
+          ReleasePlatform.ios,
+          deviceId: device.udid,
+        );
+        return null;
+      }
+      targets.add(_IosTarget(device.udid, device.name, bundleId));
+    }
+    if (targets.isEmpty) {
+      logger.err('No available iOS device has $bundleId installed.');
+      _hintInstall(releaseVersion, ReleasePlatform.ios);
+      return null;
+    }
+    return targets;
+  }
+
+  /// Reads `CFBundleIdentifier` from the release's zipped Runner.app.
+  static Future<String> _bundleIdFromRunnerZip(String zipPath) async {
+    final archive = ZipDecoder().decodeBytes(File(zipPath).readAsBytesSync());
+    final plists = archive.files.where(
+      (f) => f.isFile && p.basename(f.name) == 'Info.plist',
+    );
+    final infoPlist = plists.sortedBy<num>((f) => f.name.split('/').length);
+    if (infoPlist.isEmpty) throw Exception('Runner.app has no Info.plist.');
+    final tempDir = Directory.systemTemp.createTempSync();
+    try {
+      final plist = File(p.join(tempDir.path, 'Info.plist'))
+        ..writeAsBytesSync(infoPlist.first.content);
+      final result = await process.run('plutil', [
+        '-extract',
+        'CFBundleIdentifier',
+        'raw',
+        plist.path,
+      ]);
+      if (result.exitCode != 0) {
+        throw Exception('Unable to read bundle id: ${result.stderr}');
+      }
+      return '${result.stdout}'.trim();
+    } finally {
+      tempDir.deleteSync(recursive: true);
+    }
+  }
+
+  /// The addresses of the interface carrying the default route (Wi-Fi or
+  /// Ethernet), which is how an iPhone on the same network reaches this Mac.
+  static Future<List<InternetAddress>> _wifiAddresses() async {
+    final route = await process.run('route', ['-n', 'get', 'default']);
+    final name = RegExp(
+      r'interface:\s*(\S+)',
+    ).firstMatch('${route.stdout}')?.group(1);
+    if (name == null) throw Exception('This Mac is not on a network.');
+    final interfaces = await NetworkInterface.list();
+    final addresses = [
+      for (final interface in interfaces.where((i) => i.name == name))
+        ...interface.addresses.where((a) => !a.isLinkLocal),
+    ];
+    if (addresses.isEmpty) throw Exception('$name has no usable address.');
+    return addresses;
+  }
+
+  void _hintInstall(
+    String releaseVersion,
+    ReleasePlatform platform, {
+    String? deviceId,
+  }) {
+    final command =
+        'shorebird preview --release-version=$releaseVersion '
+        '--platform=${platform.name}'
+        '${deviceId == null ? '' : ' -d $deviceId'}';
+    logger.info('Install the release first with ${lightCyan.wrap(command)}.');
+  }
+
+  Future<bool> _pushTo(PatchPushServer server, _PushTarget target) async {
     final number = server.offer.number;
-    final progress = logger.progress('[$deviceId] Connecting');
+    final name = target.label;
+    final progress = logger.progress('[$name] Connecting');
     // Collected before relaunching so nothing the app sends is missed.
     final signals = <DeviceSignal>[];
     final newSignal = StreamController<void>.broadcast();
@@ -440,8 +661,7 @@ class LocalPatchPusher {
 
     Future<void> relaunch() async {
       signals.clear();
-      await adb.forceStop(package: package, deviceId: deviceId);
-      await adb.startApp(package: package, deviceId: deviceId);
+      await target.relaunch();
     }
 
     bool isFailure(DeviceSignal s) =>
@@ -453,9 +673,9 @@ class LocalPatchPusher {
             s.patchNumber == number);
 
     try {
-      await adb.reverse(deviceId: deviceId, port: port);
+      await target.connect();
 
-      progress.update('[$deviceId] Launching app to download patch $number');
+      progress.update('[$name] Launching app to download patch $number');
       await relaunch();
       final downloaded = await waitFor(
         (s) =>
@@ -467,47 +687,49 @@ class LocalPatchPusher {
                 s.patchNumber == number),
       );
       if (downloaded == null) {
-        progress.fail('[$deviceId] The app never checked for a patch.');
+        progress.fail('[$name] The app never checked for a patch.');
         logger.info(
-          'Make sure the release was built with base_url: '
-          'http://127.0.0.1:$port in shorebird.yaml and auto_update is on.',
+          target is _IosTarget
+              ? 'Make sure the iPhone is on the same Wi-Fi as this Mac and '
+                    'the app was allowed Local Network access (Settings > '
+                    'Privacy & Security > Local Network).'
+              : 'Make sure the release was built in local mode '
+                    '(base_url in shorebird.yaml) and auto_update is on.',
         );
         return false;
       }
       if (downloaded is PatchCheckSignal && !downloaded.offered) {
         progress.fail(
-          '[$deviceId] The app is not on this release, or patch $number has '
+          '[$name] The app is not on this release, or patch $number has '
           'no ${downloaded.arch} build.',
         );
         return false;
       }
       if (isFailure(downloaded)) {
         progress.fail(
-          '[$deviceId] Patch rejected: '
+          '[$name] Patch rejected: '
           '${(downloaded as PatchEventSignal).message ?? downloaded.type}',
         );
         return false;
       }
       if (!isRunning(downloaded)) {
-        progress.update('[$deviceId] Restarting app to apply patch $number');
+        progress.update('[$name] Restarting app to apply patch $number');
         await relaunch();
         final booted = await waitFor((s) => isFailure(s) || isRunning(s));
         if (booted == null || isFailure(booted)) {
-          progress.fail(
-            '[$deviceId] Patch $number downloaded but did not boot.',
-          );
+          progress.fail('[$name] Patch $number downloaded but did not boot.');
           return false;
         }
       }
-      progress.complete('[$deviceId] Running patch $number');
+      progress.complete('[$name] Running patch $number');
       return true;
     } on Exception catch (error) {
-      progress.fail('[$deviceId] $error');
+      progress.fail('[$name] $error');
       return false;
     } finally {
       await subscription.cancel();
       await newSignal.close();
-      await adb.removeReverse(deviceId: deviceId, port: port);
+      await target.disconnect();
     }
   }
 }

@@ -18,6 +18,7 @@ import 'package:shorebird_cli/src/extensions/string.dart';
 import 'package:shorebird_cli/src/extensions/version.dart';
 import 'package:shorebird_cli/src/formatters/formatters.dart';
 import 'package:shorebird_cli/src/json_output.dart';
+import 'package:shorebird_cli/src/local/local_base_url.dart';
 import 'package:shorebird_cli/src/local/local_store.dart';
 import 'package:shorebird_cli/src/local/patch_push.dart';
 import 'package:shorebird_cli/src/logging/logging.dart';
@@ -262,7 +263,12 @@ NOTE: this is ${styleBold.wrap('not')} recommended. Asset changes cannot be incl
 
     final published = <PublishedPatch>[];
     for (final releaseType in results.releaseTypes) {
-      published.add(await createPatch(_resolvePatcher(releaseType)));
+      published.add(
+        await withLocalBaseUrlFor(
+          releaseType.releasePlatform,
+          () => createPatch(_resolvePatcher(releaseType)),
+        ),
+      );
     }
 
     if (pushToDevices) {
