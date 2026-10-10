@@ -94,12 +94,18 @@ class Adb {
     }
   }
 
-  /// Makes `127.0.0.1:[port]` on [deviceId] reach `127.0.0.1:[port]` on this
-  /// machine.
-  Future<void> reverse({required String deviceId, required int port}) async {
-    final result = await _exec('-s $deviceId reverse tcp:$port tcp:$port');
+  /// Makes `127.0.0.1:[devicePort]` on [deviceId] reach
+  /// `127.0.0.1:[hostPort]` on this machine.
+  Future<void> reverse({
+    required String deviceId,
+    required int devicePort,
+    required int hostPort,
+  }) async {
+    final result = await _exec(
+      '-s $deviceId reverse tcp:$devicePort tcp:$hostPort',
+    );
     if (result.exitCode != 0) {
-      throw Exception('Unable to forward port $port: ${result.stderr}');
+      throw Exception('Unable to forward port $devicePort: ${result.stderr}');
     }
   }
 

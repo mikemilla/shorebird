@@ -1,0 +1,29 @@
+name: shorebird_update_ui
+description: >-
+  Customizable Flutter widgets for code push updates: silent, banner (update
+  now or next launch), or a blocking wall, driven per patch from the CLI.
+version: 0.1.0
+publish_to: none
+repository: https://github.com/mikemilla/shorebird
+
+environment:
+  sdk: ^3.9.0
+  flutter: ">=3.35.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  package_info_plus: ^9.0.0
+  shorebird_code_push: ^2.0.7
+
+dev_dependencies:
+  flutter_lints: ^6.0.0
+  flutter_test:
+    sdk: flutter
+
+flutter:
+  plugin:
+    platforms:
+      android:
+        package: dev.mikemiller.shorebird_update_ui
+        pluginClass: ShorebirdUpdateUiPlugin

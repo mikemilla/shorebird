@@ -108,14 +108,44 @@ To target the latest release (e.g. the release that was most recently updated) u
         abbr: 'd',
         help:
             'Push the patch straight to this device once it is built '
-            '(local mode, Android). Repeatable.',
+            '(local mode; adb serial, or iOS UDID or name). Repeatable.',
       )
       ..addFlag(
         'all-devices',
         negatable: false,
         help:
             'Push the patch to every connected device that has the release '
-            'installed (local mode, Android).',
+            'installed (local mode).',
+      )
+      ..addOption(
+        'apply',
+        allowed: [for (final mode in ApplyMode.values) mode.cliName],
+        defaultsTo: ApplyMode.now.cliName,
+        allowedHelp: {
+          ApplyMode.now.cliName:
+              'Relaunch the app so it is running the patch when the push '
+              'ends.',
+          ApplyMode.nextLaunch.cliName:
+              'Wait for the app to be opened; it downloads the patch and runs '
+              'it from the following launch.',
+        },
+        help: 'When a pushed patch takes effect.',
+      )
+      ..addOption(
+        'update-ui',
+        allowed: [for (final ui in UpdateUi.values) ui.cliName],
+        allowedHelp: {
+          UpdateUi.silent.cliName:
+              'No UI: downloads in the background, applies next launch.',
+          UpdateUi.bannerNow.cliName:
+              'Banner offering to update now (download, then restart).',
+          UpdateUi.bannerNextLaunch.cliName:
+              'Banner saying the update applies next launch.',
+          UpdateUi.wall.cliName: 'Block the app until the patch is installed.',
+        },
+        help:
+            'How apps using package:shorebird_update_ui present this patch '
+            '(local mode). Defaults to silent.',
       )
       ..addFlag(
         'staging',
@@ -271,11 +301,21 @@ NOTE: this is ${styleBold.wrap('not')} recommended. Asset changes cannot be incl
       );
     }
 
-    if (pushToDevices) {
+    final updateUiArg = results['update-ui'] as String?;
+    if (shorebirdEnv.isLocalMode && (pushToDevices || updateUiArg != null)) {
       final pusher = LocalPatchPusher(
         LocalStore(shorebirdEnv.localDataDirectory),
       );
       for (final p in published) {
+        if (updateUiArg != null) {
+          pusher.setUpdateUi(
+            appId: appId,
+            releaseVersion: p.release.version,
+            patchNumber: p.patch.number,
+            updateUi: UpdateUi.parse(updateUiArg),
+          );
+        }
+        if (!pushToDevices) continue;
         final exitCode = await pusher.push(
           appId: appId,
           releaseVersion: p.release.version,
@@ -283,6 +323,9 @@ NOTE: this is ${styleBold.wrap('not')} recommended. Asset changes cannot be incl
           platform: p.platform,
           deviceIds: deviceIds,
           allDevices: allDevices,
+          apply: ApplyMode.parse(
+            results['apply'] as String? ?? ApplyMode.now.cliName,
+          ),
         );
         if (exitCode != ExitCode.success.code) return exitCode;
       }

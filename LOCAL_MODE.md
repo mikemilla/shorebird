@@ -23,8 +23,8 @@ shorebird patch android --all-devices        # push to every connected device
 # iOS: same commands; -d takes the UDID (from `xcrun devicectl list devices`)
 # or the device name
 shorebird release ios --export-method development
-shorebird preview --platform ios -d 00008110-00042C5E1412801E
-shorebird patch ios -d "Mike's fancy iPhone"
+shorebird preview --platform ios -d 00008110-000A1B2C3D4E5F6A
+shorebird patch ios -d "My iPhone"
 shorebird patch ios --all-devices
 
 # re-push an existing patch without rebuilding (defaults to the latest):
@@ -40,17 +40,37 @@ platform that has the app installed, and skips the rest.
 ## How a push works
 
 The updater built into the Shorebird engine only pulls patches over HTTP, so
-the CLI briefly plays the server itself. For each device it:
+the CLI briefly plays the server itself. For each Android device it:
 
-1. Opens a listener on `127.0.0.1:47474`. It binds loopback only, so nothing is
-   exposed on your network.
-2. Runs `adb reverse tcp:47474 tcp:47474` so that device, and only that
-   device, can reach the listener.
+1. Opens a listener on `127.0.0.1` at a free port. It binds loopback only, so
+   nothing is exposed on your network.
+2. Runs `adb reverse tcp:47474 tcp:<that port>` so that device, and only that
+   device, can reach it. Each device gets its own port, so the CLI knows
+   exactly which device checked in.
 3. Relaunches the app. The updater checks in, downloads the patch, and reports
    `__patch_download__`.
 4. Relaunches again. The app boots the patch and reports `__patch_install__`.
 5. Prints `Running patch N` and removes the tunnel. Once every device is done,
    it closes the listener.
+
+### When a patch takes effect: `--apply`
+
+| `--apply` | What the CLI does |
+| --- | --- |
+| `now` (default) | Steps 3 and 4 above: the device is running the patch when the push ends. |
+| `next-launch` | Doesn't touch the app. It waits (up to 10 minutes) for someone to open it, the patch downloads in the background, and it takes effect on the launch after that. |
+
+Use `next-launch` when you want the app's own update UI to handle it.
+
+### How the app presents it: `--update-ui`
+
+Each patch carries a style that apps using
+[`package:shorebird_update_ui`](packages/shorebird_update_ui) act on:
+`silent` (default), `banner-now`, `banner-next-launch`, or `wall`. Set it when
+patching (`shorebird patch ios --update-ui wall`) or change it when re-pushing
+(`shorebird patches push --update-ui banner-now ...`). Apps read it from
+`GET /api/v1/patches/policy`, which the push listener serves next to the
+updater's endpoints.
 
 Devices you don't target never see the patch: they have no tunnel, so their
 update checks fail quietly and they keep running whatever they had.
@@ -96,13 +116,14 @@ to build patches for that release.
 | `packages/shorebird_cli/lib/src/local/local_code_push_client.dart` | Implements the code push API in-process, so the stock `CodePushClient` and every command work unchanged |
 | `packages/shorebird_cli/lib/src/local/patch_push.dart` | Short-lived updater endpoint plus adb push orchestration |
 | `commands/patches/push_command.dart` | New `shorebird patches push` |
-| `commands/patch/patch_command.dart` | New `-d/--device-id` and `--all-devices` |
+| `commands/patch/patch_command.dart` | New `-d/--device-id`, `--all-devices`, `--apply`, `--update-ui` |
 | `code_push_client_wrapper.dart`, `shorebird_validator.dart`, `shorebird_env.dart` | Local mode switch; skips login in local mode |
 | `artifact_manager.dart` | Reads `file://` artifact URLs |
 | `init_command.dart`, `release_command.dart` | Write `base_url` in local mode |
 | `executables/adb.dart` | `devices`, `isInstalled`, `forceStop`, `reverse`, `removeReverse` |
 | `executables/devicectl/devicectl.dart` | `relaunchApp`, `isAppInstalled` |
 | `local/local_base_url.dart` | Points iOS builds' `base_url` at the Mac's `.local` name |
+| `packages/shorebird_update_ui` (new) | Flutter widgets for the four update styles, with a native Android restart |
 
 ## Limits
 

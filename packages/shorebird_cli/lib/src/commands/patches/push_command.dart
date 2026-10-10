@@ -40,12 +40,44 @@ class PushCommand extends ShorebirdCommand with PatchNumberArgument {
       ..addMultiOption(
         'device-id',
         abbr: 'd',
-        help: 'The device to push to (see `adb devices`). Repeatable.',
+        help:
+            'The device to push to: an adb serial, or an iOS UDID or name. '
+            'Repeatable.',
       )
       ..addFlag(
         'all-devices',
         negatable: false,
         help: 'Push to every connected device with the release installed.',
+      )
+      ..addOption(
+        'apply',
+        allowed: [for (final mode in ApplyMode.values) mode.cliName],
+        defaultsTo: ApplyMode.now.cliName,
+        allowedHelp: {
+          ApplyMode.now.cliName:
+              'Relaunch the app so it is running the patch when the push '
+              'ends.',
+          ApplyMode.nextLaunch.cliName:
+              'Wait for the app to be opened; it downloads the patch and runs '
+              'it from the following launch.',
+        },
+        help: 'When a pushed patch takes effect.',
+      )
+      ..addOption(
+        'update-ui',
+        allowed: [for (final ui in UpdateUi.values) ui.cliName],
+        allowedHelp: {
+          UpdateUi.silent.cliName:
+              'No UI: downloads in the background, applies next launch.',
+          UpdateUi.bannerNow.cliName:
+              'Banner offering to update now (download, then restart).',
+          UpdateUi.bannerNextLaunch.cliName:
+              'Banner saying the update applies next launch.',
+          UpdateUi.wall.cliName: 'Block the app until the patch is installed.',
+        },
+        help:
+            'How apps using package:shorebird_update_ui present this patch '
+            '(local mode). Defaults to silent.',
       )
       ..addOption(
         CommonArguments.appIdArg.name,
@@ -127,13 +159,24 @@ class PushCommand extends ShorebirdCommand with PatchNumberArgument {
       patchNumber = numbers.reduce((a, b) => a > b ? a : b);
     }
 
-    return LocalPatchPusher(store).push(
+    final pusher = LocalPatchPusher(store);
+    final updateUiArg = results['update-ui'] as String?;
+    if (updateUiArg != null) {
+      pusher.setUpdateUi(
+        appId: appId,
+        releaseVersion: releaseVersion,
+        patchNumber: patchNumber,
+        updateUi: UpdateUi.parse(updateUiArg),
+      );
+    }
+    return pusher.push(
       appId: appId,
       releaseVersion: releaseVersion,
       patchNumber: patchNumber,
       platform: platform,
       deviceIds: deviceIds,
       allDevices: allDevices,
+      apply: ApplyMode.parse(results['apply'] as String),
     );
   }
 }
