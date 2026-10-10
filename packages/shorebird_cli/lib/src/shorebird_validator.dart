@@ -76,7 +76,9 @@ class ShorebirdValidator {
       throw UnsupportedOperatingSystemException();
     }
 
-    if (checkUserIsAuthenticated && !auth.isAuthenticated) {
+    if (checkUserIsAuthenticated &&
+        !shorebirdEnv.isLocalMode &&
+        !auth.isAuthenticated) {
       logger
         ..err('You must be logged in to run this command.')
         ..info(

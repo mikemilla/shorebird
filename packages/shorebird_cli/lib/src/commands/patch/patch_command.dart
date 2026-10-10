@@ -18,6 +18,8 @@ import 'package:shorebird_cli/src/extensions/string.dart';
 import 'package:shorebird_cli/src/extensions/version.dart';
 import 'package:shorebird_cli/src/formatters/formatters.dart';
 import 'package:shorebird_cli/src/json_output.dart';
+import 'package:shorebird_cli/src/local/local_store.dart';
+import 'package:shorebird_cli/src/local/patch_push.dart';
 import 'package:shorebird_cli/src/logging/logging.dart';
 import 'package:shorebird_cli/src/metadata/metadata.dart';
 import 'package:shorebird_cli/src/patch_diff_checker.dart';
@@ -99,6 +101,20 @@ To target the latest release (e.g. the release that was most recently updated) u
         'track',
         help: 'The track to publish the patch to.',
         defaultsTo: DeploymentTrack.stable.channel,
+      )
+      ..addMultiOption(
+        'device-id',
+        abbr: 'd',
+        help:
+            'Push the patch straight to this device once it is built '
+            '(local mode, Android). Repeatable.',
+      )
+      ..addFlag(
+        'all-devices',
+        negatable: false,
+        help:
+            'Push the patch to every connected device that has the release '
+            'installed (local mode, Android).',
       )
       ..addFlag(
         'staging',
@@ -233,9 +249,37 @@ NOTE: this is ${styleBold.wrap('not')} recommended. Asset changes cannot be incl
       return ExitCode.usage.code;
     }
 
+    final deviceIds = results['device-id'] as List<String>? ?? const [];
+    final allDevices = results['all-devices'] as bool? ?? false;
+    final pushToDevices = deviceIds.isNotEmpty || allDevices;
+    if (pushToDevices && !shorebirdEnv.isLocalMode) {
+      logger.err(
+        '--device-id and --all-devices push from this machine, which needs '
+        'local mode. Unset SHOREBIRD_HOSTED_URL to use it.',
+      );
+      return ExitCode.usage.code;
+    }
+
     final published = <PublishedPatch>[];
     for (final releaseType in results.releaseTypes) {
       published.add(await createPatch(_resolvePatcher(releaseType)));
+    }
+
+    if (pushToDevices) {
+      final pusher = LocalPatchPusher(
+        LocalStore(shorebirdEnv.localDataDirectory),
+      );
+      for (final p in published) {
+        final exitCode = await pusher.push(
+          appId: appId,
+          releaseVersion: p.release.version,
+          patchNumber: p.patch.number,
+          platform: p.platform,
+          deviceIds: deviceIds,
+          allDevices: allDevices,
+        );
+        if (exitCode != ExitCode.success.code) return exitCode;
+      }
     }
 
     if (isJsonMode) {

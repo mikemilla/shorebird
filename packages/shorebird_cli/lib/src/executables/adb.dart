@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:scoped_deps/scoped_deps.dart';
@@ -58,6 +59,56 @@ class Adb {
     if (result.exitCode != 0) {
       throw Exception('Unable to start app: ${result.stderr}');
     }
+  }
+
+  /// The serials of all devices adb can talk to (emulators, USB and wireless).
+  Future<List<String>> devices() async {
+    final result = await _exec('devices');
+    if (result.exitCode != 0) {
+      throw Exception('Unable to list devices: ${result.stderr}');
+    }
+    return LineSplitter.split('${result.stdout}')
+        .map((line) => line.split('\t'))
+        .where((parts) => parts.length == 2 && parts[1].trim() == 'device')
+        .map((parts) => parts[0].trim())
+        .toList();
+  }
+
+  /// Whether [package] is installed on [deviceId].
+  Future<bool> isInstalled({
+    required String package,
+    required String deviceId,
+  }) async {
+    final result = await _exec('-s $deviceId shell pm path $package');
+    return result.exitCode == 0 && '${result.stdout}'.contains('package:');
+  }
+
+  /// Stops [package] on [deviceId].
+  Future<void> forceStop({
+    required String package,
+    required String deviceId,
+  }) async {
+    final result = await _exec('-s $deviceId shell am force-stop $package');
+    if (result.exitCode != 0) {
+      throw Exception('Unable to stop app: ${result.stderr}');
+    }
+  }
+
+  /// Makes `127.0.0.1:[port]` on [deviceId] reach `127.0.0.1:[port]` on this
+  /// machine.
+  Future<void> reverse({required String deviceId, required int port}) async {
+    final result = await _exec('-s $deviceId reverse tcp:$port tcp:$port');
+    if (result.exitCode != 0) {
+      throw Exception('Unable to forward port $port: ${result.stderr}');
+    }
+  }
+
+  /// Undoes [reverse].
+  Future<void> removeReverse({
+    required String deviceId,
+    required int port,
+  }) async {
+    await _exec('-s $deviceId reverse --remove tcp:$port');
   }
 
   /// Runs `adb logcat`.

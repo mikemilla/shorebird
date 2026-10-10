@@ -16,6 +16,8 @@ import 'package:shorebird_cli/src/artifact_manager.dart';
 import 'package:shorebird_cli/src/auth/auth.dart';
 import 'package:shorebird_cli/src/deployment_track.dart';
 import 'package:shorebird_cli/src/executables/executables.dart';
+import 'package:shorebird_cli/src/local/local_code_push_client.dart';
+import 'package:shorebird_cli/src/local/local_store.dart';
 import 'package:shorebird_cli/src/logging/logging.dart';
 import 'package:shorebird_cli/src/platform/platform.dart';
 import 'package:shorebird_cli/src/shorebird_env.dart';
@@ -70,6 +72,16 @@ class PatchArtifactBundle extends Equatable {
 
 /// A reference to a [CodePushClientWrapper] instance.
 ScopedRef<CodePushClientWrapper> codePushClientWrapperRef = create(() {
+  if (shorebirdEnv.isLocalMode) {
+    return CodePushClientWrapper(
+      codePushClient: CodePushClient(
+        httpClient: LocalCodePushHttpClient(
+          LocalStore(shorebirdEnv.localDataDirectory),
+        ),
+        hostedUri: localHostedUri,
+      ),
+    );
+  }
   return CodePushClientWrapper(
     codePushClient: CodePushClient(
       httpClient: auth.client,

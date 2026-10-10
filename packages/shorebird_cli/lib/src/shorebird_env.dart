@@ -293,6 +293,37 @@ class ShorebirdEnv {
     }
   }
 
+  /// Whether the CLI keeps releases and patches on this machine instead of
+  /// talking to a hosted code push server.
+  ///
+  /// This is the default. Setting `SHOREBIRD_HOSTED_URL` opts back into a
+  /// hosted server (e.g. `https://api.shorebird.dev`).
+  bool get isLocalMode => platform.environment['SHOREBIRD_HOSTED_URL'] == null;
+
+  /// Where local mode keeps its database and artifacts. Can be overridden
+  /// with the `SHOREBIRD_LOCAL_DIR` environment variable.
+  Directory get localDataDirectory {
+    final override = platform.environment['SHOREBIRD_LOCAL_DIR'];
+    if (override != null) return Directory(override);
+    final home =
+        platform.environment['HOME'] ?? platform.environment['USERPROFILE']!;
+    return Directory(p.join(home, '.shorebird_local'));
+  }
+
+  /// The port devices reach this machine on while a patch is being pushed.
+  /// Can be overridden with the `SHOREBIRD_LOCAL_PORT` environment variable.
+  int get localPushPort =>
+      int.tryParse(platform.environment['SHOREBIRD_LOCAL_PORT'] ?? '') ??
+      defaultLocalPushPort;
+
+  /// The default for [localPushPort].
+  static const defaultLocalPushPort = 47474;
+
+  /// The `base_url` written into shorebird.yaml in local mode. Android
+  /// devices reach it through `adb reverse`, so it is the same for every
+  /// emulator and USB/wireless device.
+  String get localBaseUrl => 'http://127.0.0.1:$localPushPort';
+
   /// Whether the CLI can accept user input via stdin.
   ///
   /// Returns `false` when stdin is not a terminal, when running on CI, or

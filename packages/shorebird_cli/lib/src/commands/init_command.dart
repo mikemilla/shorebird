@@ -422,6 +422,12 @@ app_id:
 
     if (flavors != null) editor.update(['flavors'], flavors);
 
+    // In local mode devices pull patches from this machine (see
+    // `shorebird patch --device-id`), so point the updater here.
+    if (shorebirdEnv.isLocalMode) {
+      editor.update(['base_url'], shorebirdEnv.localBaseUrl);
+    }
+
     shorebirdEnv
         .getShorebirdYamlFile(cwd: projectRoot)
         .writeAsStringSync(editor.toString());

@@ -89,6 +89,22 @@ class ArtifactManager {
   /// [Stream] of download progress updates.
   @visibleForTesting
   Future<FileDownload> startFileDownload(Uri uri, {String? outputPath}) async {
+    // Local mode stores artifacts on disk and hands out file:// URLs.
+    if (uri.scheme == 'file') {
+      final source = File.fromUri(uri);
+      final File outFile;
+      if (outputPath != null) {
+        outFile = File(outputPath);
+      } else {
+        final tempDir = await Directory.systemTemp.createTemp();
+        outFile = File(p.join(tempDir.path, 'artifact'));
+      }
+      return FileDownload(
+        file: source.copy(outFile.path),
+        progress: const Stream.empty(),
+      );
+    }
+
     final request = http.Request('GET', uri);
     final response = await httpClient.send(request);
 

@@ -186,7 +186,13 @@ class MockShorebirdArtifacts extends Mock implements ShorebirdArtifacts {}
 class MockShorebirdCliCommandRunner extends Mock
     implements ShorebirdCliCommandRunner {}
 
-class MockShorebirdEnv extends Mock implements ShorebirdEnv {}
+class MockShorebirdEnv extends Mock implements ShorebirdEnv {
+  // Upstream tests exercise the hosted server; local mode is opted into by
+  // stubbing this.
+  @override
+  bool get isLocalMode =>
+      super.noSuchMethod(Invocation.getter(#isLocalMode)) as bool? ?? false;
+}
 
 class MockShorebirdFlutter extends Mock implements ShorebirdFlutter {}
 

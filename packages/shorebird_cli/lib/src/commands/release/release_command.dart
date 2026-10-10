@@ -28,6 +28,7 @@ import 'package:shorebird_cli/src/third_party/flutter_tools/lib/flutter_tools.da
 import 'package:shorebird_cli/src/version.dart';
 import 'package:shorebird_code_push_client/shorebird_code_push_client.dart';
 import 'package:shorebird_code_push_protocol/shorebird_code_push_protocol.dart';
+import 'package:yaml_edit/yaml_edit.dart';
 
 /// A function that resolves a [Releaser] for a given [ReleaseType].
 typedef ResolveReleaser = Releaser Function(ReleaseType releaseType);
@@ -197,6 +198,8 @@ of the iOS app that is using this module. (aar and ios-framework only)''',
       return ExitCode.usage.code;
     }
 
+    ensureLocalBaseUrl();
+
     // One Release can carry several platforms, so releases are collected by
     // id: each platform's pass re-fetches the release, and the last fetch is
     // the one whose platform statuses are complete.
@@ -217,6 +220,25 @@ of the iOS app that is using this module. (aar and ios-framework only)''',
     }
 
     return ExitCode.success.code;
+  }
+
+  /// In local mode, points the app's updater at this machine (see
+  /// `shorebird patch --device-id`) unless shorebird.yaml already sets a
+  /// `base_url`.
+  @visibleForTesting
+  void ensureLocalBaseUrl() {
+    if (!shorebirdEnv.isLocalMode) return;
+    final projectRoot = shorebirdEnv.getShorebirdProjectRoot();
+    if (projectRoot == null) return;
+    if (shorebirdEnv.getShorebirdYaml()?.baseUrl != null) return;
+    final file = shorebirdEnv.getShorebirdYamlFile(cwd: projectRoot);
+    final editor = YamlEditor(file.readAsStringSync())
+      ..update(['base_url'], shorebirdEnv.localBaseUrl);
+    file.writeAsStringSync(editor.toString());
+    logger.info(
+      'Added base_url: ${shorebirdEnv.localBaseUrl} to shorebird.yaml so '
+      'devices pull patches from this machine.',
+    );
   }
 
   /// Returns a [Releaser] for the given [ReleaseType].
